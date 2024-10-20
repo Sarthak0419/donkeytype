@@ -128,47 +128,74 @@ fn handle_history_command(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>)
     Ok(())
 }
 
+fn ask_for_restart() -> Result<bool, anyhow::Error> {
+    use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyModifiers};
+
+    println!("Would you like to restart the test? (y/n)");
+
+    loop {
+        if let Event::Key(KeyEvent { code, modifiers: _ }) = read()? {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    return Ok(true); // Restart the test
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') => {
+                    return Ok(false); // Do not restart
+                }
+                _ => {
+                    // Ignore other keypresses and wait for 'y' or 'n'
+                }
+            }
+        }
+    }
+}
+
+
 fn handle_main_command(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    args: Args,
+    mut args: Args,
 ) -> Result<()> {
-    let config_file_path = args
-        .config_path
-        .clone()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let base_dir = if cfg!(target_os = "windows") {
-                dirs::config_local_dir().expect("Unable to get local config directory")
-            } else {
-                dirs::home_dir()
-                    .expect("Unable to get home directory")
-                    .join(".config")
-            };
-            base_dir.join("donkeytype").join("donkeytype-config.json")
-        });
-
-    let config = Config::new(args, config_file_path).context("Unable to create config")?;
-    let expected_input = ExpectedInput::new(&config).context("Unable to create expected input")?;
-
-    let mut app = Runner::new(config, expected_input);
-    let test_results = app.run(terminal).context("Error while running the test")?;
-
-    if test_results.completed {
-        test_results
-            .render(terminal)
-            .context("Unable to render test results")?;
-        if test_results.save {
-            test_results
-                .save_to_file()
-                .context("Unable to save results to file")?;
-        }
-        restore_terminal(terminal).context("Unable to restore terminal")?;
+    let config_file_path = if cfg!(target_os = "windows") {
+        dirs::config_local_dir().context("Unable to get local config directory")?
     } else {
-        restore_terminal(terminal).context("Unable to restore terminal")?;
-        println!("Test not finished.");
+        dirs::home_dir()
+            .context("Unable to get home directory")?
+            .join(".config")
+    }
+    .join("donkeytype")
+    .join("donkeytype-config.json");
+
+    loop {
+        let config = Config::new(args.clone(), config_file_path.clone()).context("Unable to create config")?;
+        let expected_input = ExpectedInput::new(&config).context("Unable to create expected input")?;
+
+        let mut app = Runner::new(config, expected_input);
+        let test_results = app.run(terminal).context("Error while running the test")?;
+
+        if test_results.completed {
+            test_results
+                .render(terminal)
+                .context("Unable to render test results")?;
+            if test_results.save {
+                test_results
+                    .save_to_file()
+                    .context("Unable to save results to file")?;
+            }
+
+            // Ask if user wants to restart
+            if !ask_for_restart()? {
+                restore_terminal(terminal).context("Unable to restore terminal")?;
+                break; // Exit the loop and return if user does not want to restart
+            }
+        } else {
+            restore_terminal(terminal).context("Unable to restore terminal")?;
+            println!("Test not finished.");
+            break; // Exit the loop if the test was not completed
+        }
     }
     Ok(())
 }
+
 
 /// prepares terminal window for rendering using tui
 fn configure_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>, anyhow::Error> {
